@@ -142,6 +142,45 @@ def _bbox_seed(bbox):
     return abs(hash(tuple(round(v, 4) for v in bbox))) % (2 ** 31)
 
 
+def _apply_synthetic_clearing(stack: RasterStack, seed: int) -> RasterStack:
+    """Demo-mode only: strips vegetation signal from a deterministic
+    sub-region of an existing RasterStack to simulate a deforestation
+    clearing event, for the /api/change-detection 'after' scenario. Keeps
+    everything else (tree layout, noise) identical to the 'before' stack so
+    the diff is attributable to the clearing alone, not to resampled noise."""
+    rng = np.random.default_rng(seed)
+    h, w = stack.height, stack.width
+    yy, xx = np.mgrid[0:h, 0:w]
+
+    # Clearing occupies ~18-32% of the AOI's linear extent, placed anywhere
+    # fully inside the raster (not touching the edge, so it reads as a
+    # genuine internal clearing rather than an AOI-boundary artifact).
+    frac = rng.uniform(0.18, 0.32)
+    cw, ch = int(w * frac), int(h * frac)
+    cx0 = rng.integers(int(w * 0.05), max(int(w * 0.05) + 1, w - cw - int(w * 0.05)))
+    cy0 = rng.integers(int(h * 0.05), max(int(h * 0.05) + 1, h - ch - int(h * 0.05)))
+    clearing = (yy >= cy0) & (yy < cy0 + ch) & (xx >= cx0) & (xx < cx0 + cw)
+
+    red = stack.red.copy(); green = stack.green.copy()
+    blue = stack.blue.copy(); nir = stack.nir.copy()
+    sar_vv = stack.sar_vv.copy(); sar_vh = stack.sar_vh.copy()
+
+    # Bare-soil / cleared-land reflectance signature: bright, low NIR.
+    red[clearing] = np.clip(0.32 + rng.normal(0, 0.02, red[clearing].shape), 0, 1)
+    green[clearing] = np.clip(0.28 + rng.normal(0, 0.02, green[clearing].shape), 0, 1)
+    blue[clearing] = np.clip(0.22 + rng.normal(0, 0.02, blue[clearing].shape), 0, 1)
+    nir[clearing] = np.clip(0.22 + rng.normal(0, 0.015, nir[clearing].shape), 0, 1)
+    # Bare/disturbed ground has much lower SAR backscatter than canopy.
+    sar_vv[clearing] = -16 + rng.normal(0, 0.6, sar_vv[clearing].shape)
+    sar_vh[clearing] = -21 + rng.normal(0, 0.6, sar_vh[clearing].shape)
+
+    return RasterStack(
+        red=red, nir=nir, green=green, blue=blue,
+        sar_vv=sar_vv, sar_vh=sar_vh, cloud_mask=stack.cloud_mask.copy(),
+        crs=stack.crs, bounds=stack.bounds, width=w, height=h,
+    )
+
+
 SH_TOKEN_URL = "https://services.sentinel-hub.com/oauth/token"
 SH_PROCESS_URL = "https://services.sentinel-hub.com/api/v1/process"
 
@@ -211,18 +250,23 @@ def _get_access_token():
     return _token_cache["access_token"]
 
 
-def _default_time_range(days_back=60):
-    now = datetime.now(timezone.utc)
+def _default_time_range(days_back=60, offset_days=0):
+    """Time window ending `offset_days` ago, spanning `days_back` days
+    before that. offset_days=0 (default) is the usual recent window;
+    change detection uses offset_days>0 to pull an older 'before' window
+    (e.g. ~1 year back) alongside the normal recent 'after' window."""
+    now = datetime.now(timezone.utc) - timedelta(days=offset_days)
     start = now - timedelta(days=days_back)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     return {"from": start.strftime(fmt), "to": now.strftime(fmt)}
 
 
 def _process_api_request(evalscript, bbox, width, height, data_type,
-                          token, extra_data_filter=None, processing=None):
+                          token, extra_data_filter=None, processing=None,
+                          days_back=60, offset_days=0):
     import requests
 
-    data_filter = {"timeRange": _default_time_range(), "mosaickingOrder": "leastCC"}
+    data_filter = {"timeRange": _default_time_range(days_back, offset_days), "mosaickingOrder": "leastCC"}
     if extra_data_filter:
         data_filter.update(extra_data_filter)
 
@@ -283,11 +327,12 @@ def _decode_multiband_tiff(tiff_bytes, expected_bands):
     return arr
 
 
-def _fetch_real_stack(bbox, width, height) -> RasterStack:
+def _fetch_real_stack(bbox, width, height, offset_days=0) -> RasterStack:
     token = _get_access_token()
 
     s2_bytes = _process_api_request(
         _S2_EVALSCRIPT, bbox, width, height, "sentinel-2-l2a", token,
+        offset_days=offset_days,
     )
     s2 = _decode_multiband_tiff(s2_bytes, expected_bands=5)
     blue, green, red, nir, scl = s2[0], s2[1], s2[2], s2[3], s2[4]
@@ -298,6 +343,7 @@ def _fetch_real_stack(bbox, width, height) -> RasterStack:
         _S1_EVALSCRIPT, bbox, width, height, "sentinel-1-grd", token,
         extra_data_filter={"resolution": "HIGH"},
         processing={"backCoeff": "GAMMA0_TERRAIN", "orthorectify": True},
+        offset_days=offset_days,
     )
     s1 = _decode_multiband_tiff(s1_bytes, expected_bands=2)
     vv_linear, vh_linear = s1[0], s1[1]
@@ -313,18 +359,41 @@ def _fetch_real_stack(bbox, width, height) -> RasterStack:
     )
 
 
-def fetch_optical(bbox, target_px=1024, density_scale=1.0) -> RasterStack:
-    if USE_REAL_IMAGERY:
-        h, w = _bbox_to_shape(bbox, target_px)
-        return _fetch_real_stack(bbox, w, h)
-    return _synth_stack(bbox, seed=_bbox_seed(bbox), target_px=target_px, density_scale=density_scale)
+# How far back the 'before' window sits, for change detection, relative to
+# the normal recent 'after' window. ~13 months gives a full seasonal cycle
+# of separation while still being well within Sentinel-2's archive.
+CHANGE_DETECTION_BEFORE_OFFSET_DAYS = 395
 
 
-def fetch_sar(bbox, target_px=1024, density_scale=1.0) -> RasterStack:
+def fetch_optical(bbox, target_px=1024, density_scale=1.0, scenario="current") -> RasterStack:
+    """scenario: 'current' (default, unchanged behavior), 'before' or
+    'after' (used by /api/change-detection). In real-imagery mode, 'before'
+    pulls an older Sentinel Hub time window; 'after' is the normal recent
+    window. In demo/synthetic mode, 'before' is the normal synthetic
+    stack and 'after' additionally has a deterministic clearing applied
+    (see _apply_synthetic_clearing) so the two are comparable but genuinely
+    different, the way a real deforestation event would look."""
     if USE_REAL_IMAGERY:
         h, w = _bbox_to_shape(bbox, target_px)
-        return _fetch_real_stack(bbox, w, h)
-    return _synth_stack(bbox, seed=_bbox_seed(bbox), target_px=target_px, density_scale=density_scale)
+        offset_days = CHANGE_DETECTION_BEFORE_OFFSET_DAYS if scenario == "before" else 0
+        return _fetch_real_stack(bbox, w, h, offset_days=offset_days)
+
+    base = _synth_stack(bbox, seed=_bbox_seed(bbox), target_px=target_px, density_scale=density_scale)
+    if scenario == "after":
+        return _apply_synthetic_clearing(base, seed=_bbox_seed(bbox) + 7)
+    return base
+
+
+def fetch_sar(bbox, target_px=1024, density_scale=1.0, scenario="current") -> RasterStack:
+    if USE_REAL_IMAGERY:
+        h, w = _bbox_to_shape(bbox, target_px)
+        offset_days = CHANGE_DETECTION_BEFORE_OFFSET_DAYS if scenario == "before" else 0
+        return _fetch_real_stack(bbox, w, h, offset_days=offset_days)
+
+    base = _synth_stack(bbox, seed=_bbox_seed(bbox), target_px=target_px, density_scale=density_scale)
+    if scenario == "after":
+        return _apply_synthetic_clearing(base, seed=_bbox_seed(bbox) + 7)
+    return base
 
 
 # ============================================================================
@@ -573,6 +642,39 @@ def _rgb_to_png_b64(r, g, b) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+def _loss_gain_heatmap_png_b64(ndvi_before: np.ndarray, ndvi_after: np.ndarray) -> str:
+    """Diverging heatmap: red = canopy loss (NDVI dropped), green = canopy
+    gain (NDVI rose), black = no meaningful change. This is the visual
+    'temporal canopy degradation heatmap' the problem statement asks for."""
+    diff = np.nan_to_num(ndvi_before - ndvi_after)  # positive = loss
+    scale = max(float(np.percentile(np.abs(diff), 98)), 1e-3)
+    norm = np.clip(diff / scale, -1, 1)
+
+    h, w = norm.shape
+    rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    rgb[..., 0] = (np.clip(norm, 0, 1) * 255).astype(np.uint8)   # red channel = loss
+    rgb[..., 1] = (np.clip(-norm, 0, 1) * 255).astype(np.uint8)  # green channel = gain
+
+    img = Image.fromarray(rgb, mode="RGB")
+    img.thumbnail((PREVIEW_MAX_PX, PREVIEW_MAX_PX))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def _run_pipeline_on_stack(stack: RasterStack, pixel_size_m: float):
+    """Runs canopy detection -> instance segmentation -> vectorization ->
+    biomass summary on one RasterStack. Shared by /api/infer and both
+    scenarios of /api/change-detection so the two endpoints can never
+    silently drift apart in methodology."""
+    canopy_mask, source_map, ndvi, sar_idx, cloud = build_canopy_mask(stack)
+    cloud_frac = float(cloud.mean())
+    labels, distance = instance_segment(canopy_mask)
+    fc = vectorize_instances(labels, stack.bounds, stack.width, stack.height, ndvi, source_map, pixel_size_m)
+    summary = summarize_polygon(fc["features"], cloud_frac)
+    return fc, summary, canopy_mask, ndvi
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -623,4 +725,66 @@ def layer_preview(req: PolygonRequest):
         "canopy_mask": _array_to_png_b64(canopy_mask.astype(float)),
         "cloud_fraction": float(cloud.mean()),
         "bbox": bbox,
+    }
+
+
+@app.post("/api/change-detection")
+def change_detection(req: PolygonRequest):
+    """Deforestation alerting: runs the full pipeline on an older 'before'
+    window and the normal recent 'after' window over the same AOI, then
+    diffs the results. In demo mode (USE_REAL_IMAGERY=0) the 'after'
+    imagery has a deterministic synthetic clearing applied so the demo is
+    always visibly meaningful; in live mode 'before' is pulled from
+    ~13 months back in the real Sentinel Hub archive and 'after' is the
+    normal recent window — same evalscripts, same pipeline, just two
+    different time ranges."""
+    t0 = time.time()
+    bbox = _bbox_from_coords(req.coordinates)
+
+    try:
+        stack_before = fetch_optical(bbox, scenario="before")
+        stack_after = fetch_optical(bbox, scenario="after")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Imagery fetch failed: {e}")
+
+    pixel_size_m = _approx_pixel_size_m(bbox, stack_before.width)
+
+    fc_before, summary_before, canopy_before, ndvi_before = _run_pipeline_on_stack(stack_before, pixel_size_m)
+    fc_after, summary_after, canopy_after, ndvi_after = _run_pipeline_on_stack(stack_after, pixel_size_m)
+
+    loss_mask = canopy_before & (~canopy_after)
+    gain_mask = canopy_after & (~canopy_before)
+    px_area_m2 = pixel_size_m ** 2
+    loss_area_m2 = float(loss_mask.sum() * px_area_m2)
+    gain_area_m2 = float(gain_mask.sum() * px_area_m2)
+    before_canopy_area_m2 = float(canopy_before.sum() * px_area_m2)
+    loss_pct_of_canopy = round(100 * loss_area_m2 / before_canopy_area_m2, 2) if before_canopy_area_m2 > 0 else 0.0
+
+    tree_delta = summary_after["tree_count"] - summary_before["tree_count"]
+    agb_delta_kg = round(summary_after["total_agb_kg"] - summary_before["total_agb_kg"], 2)
+    agb_delta_pct = (
+        round(100 * agb_delta_kg / summary_before["total_agb_kg"], 2)
+        if summary_before["total_agb_kg"] > 0 else 0.0
+    )
+
+    elapsed = round(time.time() - t0, 3)
+
+    return {
+        "bbox": bbox,
+        "before": summary_before,
+        "after": summary_after,
+        "delta": {
+            "tree_count_change": tree_delta,
+            "agb_change_kg": agb_delta_kg,
+            "agb_change_pct": agb_delta_pct,
+            "canopy_loss_area_m2": round(loss_area_m2, 1),
+            "canopy_gain_area_m2": round(gain_area_m2, 1),
+            "canopy_loss_pct_of_before": loss_pct_of_canopy,
+            "alert": loss_pct_of_canopy >= 5.0,  # flag as a deforestation alert past this threshold
+        },
+        "heatmap": _loss_gain_heatmap_png_b64(ndvi_before, ndvi_after),
+        "canopy_before_png": _array_to_png_b64(canopy_before.astype(float)),
+        "canopy_after_png": _array_to_png_b64(canopy_after.astype(float)),
+        "processing_seconds": elapsed,
+        "pixel_size_m": round(pixel_size_m, 2),
     }

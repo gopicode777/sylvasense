@@ -59,13 +59,14 @@ if (drawingAvailable) {
 
 let currentPolygonLatLngs = null;
 let currentResult = null;
-let overlayLayers = { rgb: null, ndvi: null, sar: null, mask: null, crowns: null };
+let overlayLayers = { rgb: null, ndvi: null, sar: null, mask: null, crowns: null, heatmap: null };
 
 // ---------- UI wiring ----------
 const els = {
   btnDraw: document.getElementById('btn-draw'),
   btnSample: document.getElementById('btn-sample'),
   btnInfer: document.getElementById('btn-infer'),
+  btnChange: document.getElementById('btn-change'),
   btnExport: document.getElementById('btn-export'),
   status: document.getElementById('status'),
   statusText: document.getElementById('status-text'),
@@ -79,10 +80,14 @@ const els = {
     sar: document.getElementById('toggle-sar'),
     mask: document.getElementById('toggle-mask'),
     crowns: document.getElementById('toggle-crowns'),
+    heatmap: document.getElementById('toggle-heatmap'),
   },
   treeList: document.getElementById('tree-list'),
   treeListCount: document.getElementById('tree-list-count'),
   treeSearch: document.getElementById('tree-search'),
+  changeEmptyState: document.getElementById('change-empty-state'),
+  changeContent: document.getElementById('change-content'),
+  changeAlertBanner: document.getElementById('change-alert-banner'),
 };
 
 const TREE_LIST_MAX_ROWS = 150; // render cap for perf; search still finds any tree beyond this
@@ -108,6 +113,7 @@ els.btnDraw.addEventListener('click', () => {
   drawnItems.clearLayers();
   currentPolygonLatLngs = null;
   els.btnInfer.disabled = true;
+  els.btnChange.disabled = true;
   new L.Draw.Polygon(map, drawControl.options.draw.polygon).enable();
 });
 
@@ -117,6 +123,7 @@ if (drawingAvailable && typeof L.Draw !== 'undefined') {
     drawnItems.addLayer(e.layer);
     currentPolygonLatLngs = e.layer.getLatLngs()[0];
     els.btnInfer.disabled = false;
+    els.btnChange.disabled = false;
     setStatus('idle', 'aoi ready');
   });
 }
@@ -139,6 +146,7 @@ els.btnSample.addEventListener('click', () => {
   currentPolygonLatLngs = latlngs;
   map.fitBounds(poly.getBounds(), { padding: [40, 40] });
   els.btnInfer.disabled = false;
+  els.btnChange.disabled = false;
   setStatus('idle', 'sample aoi loaded');
 });
 
@@ -199,6 +207,66 @@ async function runInference() {
 }
 
 els.btnInfer.addEventListener('click', runInference);
+
+async function runChangeDetection() {
+  if (!currentPolygonLatLngs) return;
+  const coords = polygonToCoords(currentPolygonLatLngs);
+
+  els.btnChange.disabled = true;
+  els.btnInfer.disabled = true;
+  setStatus('busy', 'comparing before/after imagery');
+  showLoading('COMPARING CANOPY OVER TIME…');
+
+  try {
+    const res = await fetch(`${API_BASE}/api/change-detection`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coordinates: coords }),
+    });
+    if (!res.ok) throw new Error('Backend returned an error status');
+
+    const result = await res.json();
+    const bounds = boundsFromCoords(coords);
+
+    clearOverlay('heatmap');
+    overlayLayers.heatmap = L.imageOverlay(`data:image/png;base64,${result.heatmap}`, bounds, { opacity: 0.85 });
+    if (els.toggles.heatmap.checked) overlayLayers.heatmap.addTo(map);
+    map.fitBounds(bounds, { padding: [40, 40] });
+
+    renderChangeResults(result);
+    setStatus('live', `change scan done in ${result.processing_seconds}s`);
+  } catch (err) {
+    console.error(err);
+    setStatus('error', 'backend unreachable — is uvicorn running on :8000?');
+  } finally {
+    hideLoading();
+    els.btnChange.disabled = false;
+    els.btnInfer.disabled = false;
+  }
+}
+
+els.btnChange.addEventListener('click', runChangeDetection);
+
+function renderChangeResults(result) {
+  const d = result.delta;
+  els.changeEmptyState.style.display = 'none';
+  els.changeContent.style.display = 'block';
+
+  els.changeAlertBanner.style.display = d.alert ? 'block' : 'none';
+  els.changeAlertBanner.textContent = d.alert
+    ? `⚠ Deforestation alert — ${d.canopy_loss_pct_of_before}% of prior canopy lost`
+    : '';
+
+  const treeArrow = d.tree_count_change < 0 ? '↓' : (d.tree_count_change > 0 ? '↑' : '→');
+  document.getElementById('c-trees').textContent =
+    `${result.before.tree_count} → ${result.after.tree_count} (${treeArrow}${Math.abs(d.tree_count_change)})`;
+
+  const agbSign = d.agb_change_kg > 0 ? '+' : '';
+  document.getElementById('c-agb').textContent = `${agbSign}${fmt(d.agb_change_kg, 'g')} (${agbSign}${d.agb_change_pct}%)`;
+
+  document.getElementById('c-loss-area').textContent = `${fmt(d.canopy_loss_area_m2, 'm²')}`;
+  document.getElementById('c-loss-pct').textContent = `${d.canopy_loss_pct_of_before}%`;
+  document.getElementById('c-gain-area').textContent = `${fmt(d.canopy_gain_area_m2, 'm²')}`;
+}
 
 function clearOverlay(key) {
   if (overlayLayers[key]) {
@@ -262,7 +330,7 @@ function locateTree(treeId) {
 }
 
 function applyToggleState() {
-  const map_ = { rgb: 'rgb', ndvi: 'ndvi', sar: 'sar', mask: 'mask' };
+  const map_ = { rgb: 'rgb', ndvi: 'ndvi', sar: 'sar', mask: 'mask', heatmap: 'heatmap' };
   for (const key of Object.keys(map_)) {
     const on = els.toggles[key].checked;
     const layer = overlayLayers[key];

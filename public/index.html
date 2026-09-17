@@ -160,6 +160,12 @@
   #confidence-fill{ height: 100%; background: linear-gradient(90deg, var(--alert), var(--canopy)); width:0%; transition: width .4s ease; }
 
   #empty-state{ color: var(--text-dim); font-size: 12.5px; line-height: 1.6; padding: 4px 2px; }
+  #change-empty-state{ color: var(--text-dim); font-size: 12.5px; line-height: 1.6; padding: 4px 2px; }
+  #change-alert-banner{
+    background: rgba(232,84,74,0.12); border: 1px solid var(--alert);
+    color: var(--alert); font-size: 12px; font-weight: 600;
+    padding: 8px 10px; border-radius: 6px; margin-bottom: 10px;
+  }
 
   .tree-list-head{
     display:flex; justify-content:space-between; align-items:center;
@@ -255,6 +261,7 @@
           <button id="btn-sample" class="ghost">Load Sample</button>
         </div>
         <button id="btn-infer" class="primary" style="margin-top:8px;" disabled>Run Live Inference</button>
+        <button id="btn-change" class="ghost" style="margin-top:8px; border-color: var(--alert); color: var(--alert);" disabled>Detect Deforestation (Before / After)</button>
       </div>
     </div>
 
@@ -280,6 +287,10 @@
         <div class="toggle-row">
           <span><span class="swatch" style="background:#d9614f"></span>Detected Crowns</span>
           <label class="switch"><input type="checkbox" id="toggle-crowns" checked><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span><span class="swatch" style="background:linear-gradient(90deg,#e8544a,#3fb87a)"></span>Loss/Gain Heatmap</span>
+          <label class="switch"><input type="checkbox" id="toggle-heatmap"><span class="slider"></span></label>
         </div>
       </div>
     </div>
@@ -309,6 +320,24 @@
             </div>
             <input id="tree-search" class="tree-search" type="text" placeholder="Find tree by # (e.g. 12)" />
             <div id="tree-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">CHANGE DETECTION</div>
+      <div class="card" id="change-card">
+        <div id="change-empty-state">Run "Detect Deforestation" to compare canopy between an older and a recent satellite pass over this AOI.</div>
+        <div id="change-content" style="display:none;">
+          <div id="change-alert-banner" style="display:none;">⚠ Deforestation alert — canopy loss above threshold</div>
+          <div class="stat"><span class="k">Trees before → after</span><span class="v" id="c-trees">—</span></div>
+          <div class="stat"><span class="k">AGB change</span><span class="v" id="c-agb">—</span></div>
+          <div class="stat"><span class="k">Canopy area lost</span><span class="v" id="c-loss-area">—</span></div>
+          <div class="stat"><span class="k">Loss % of prior canopy</span><span class="v" id="c-loss-pct">—</span></div>
+          <div class="stat"><span class="k">Canopy area gained</span><span class="v" id="c-gain-area">—</span></div>
+          <div style="font-size:11px; color:var(--text-dim); margin-top:8px; line-height:1.5;">
+            Red = canopy loss, Green = canopy gain (toggle "Loss/Gain Heatmap" under Spectral Layers). "Before" window is ~13 months back; "after" is the current recent pass.
           </div>
         </div>
       </div>
