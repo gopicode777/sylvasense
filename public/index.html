@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SylvaSense — Canopy & Biomass Console</title>
+
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=2" />
+<link rel="stylesheet" href="vendor/leaflet-draw/leaflet.draw.css?v=2" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --bg-void:      #0b1210;
+    --bg-panel:     #121b17;
+    --bg-panel-2:   #17221d;
+    --line:         #24322b;
+    --line-bright:  #34483d;
+    --text-hi:      #e7f0ea;
+    --text-mid:     #9db3a7;
+    --text-dim:     #63796e;
+    --canopy:       #3fb87a;
+    --canopy-dim:   #275c3c;
+    --sar:          #4aa3c9;
+    --alert:        #e8a33d;
+    --danger:       #d9614f;
+  }
+
+  *{ box-sizing: border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    background: var(--bg-void);
+    color: var(--text-hi);
+    font-family: 'IBM Plex Sans', sans-serif;
+    overflow: hidden;
+  }
+  .mono{ font-family: 'IBM Plex Mono', monospace; }
+
+  #app{
+    display: grid;
+    grid-template-columns: 336px 1fr;
+    grid-template-rows: 56px 1fr;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* ---------- Top bar ---------- */
+  #topbar{
+    grid-column: 1 / 3;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--line);
+  }
+  #brand{ display:flex; align-items:center; gap:10px; }
+  #brand .mark{
+    width: 22px; height: 22px;
+    border-radius: 3px;
+    background: linear-gradient(160deg, var(--canopy), var(--canopy-dim));
+    box-shadow: 0 0 0 1px var(--line-bright) inset;
+  }
+  #brand .name{ font-weight:600; font-size: 15px; letter-spacing: 0.2px; }
+  #brand .tag{ color: var(--text-dim); font-size: 12px; margin-left: 8px; padding-left:8px; border-left: 1px solid var(--line); }
+  #status{ display:flex; align-items:center; gap: 8px; font-size: 12px; color: var(--text-mid); }
+  #status .dot{ width:7px; height:7px; border-radius:50%; background: var(--text-dim); }
+  #status.live .dot{ background: var(--canopy); box-shadow: 0 0 6px var(--canopy); }
+  #status.busy .dot{ background: var(--alert); box-shadow: 0 0 6px var(--alert); }
+  #status.error .dot{ background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+
+  /* ---------- Sidebar ---------- */
+  #sidebar{
+    background: var(--bg-panel);
+    border-right: 1px solid var(--line);
+    padding: 18px 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .section-label{
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    font-weight: 500;
+  }
+  .card{
+    background: var(--bg-panel-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 14px;
+  }
+
+  #draw-hint{ font-size: 12.5px; color: var(--text-mid); line-height:1.5; }
+  #draw-hint b{ color: var(--text-hi); font-weight: 600; }
+
+  button{
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 5px;
+    border: 1px solid var(--line-bright);
+    background: var(--bg-panel-2);
+    color: var(--text-hi);
+    padding: 9px 12px;
+    cursor: pointer;
+    transition: border-color .12s ease, background .12s ease;
+    width: 100%;
+  }
+  button:hover{ border-color: var(--canopy); }
+  button:disabled{ opacity: 0.4; cursor: not-allowed; }
+  button.primary{
+    background: var(--canopy);
+    color: #06170f;
+    border-color: var(--canopy);
+    font-weight: 600;
+  }
+  button.primary:hover{ background: #4fd68f; }
+  button.ghost{ background: transparent; }
+
+  .btn-row{ display:flex; gap:8px; }
+
+  .toggle-row{
+    display:flex; align-items:center; justify-content: space-between;
+    padding: 9px 2px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+  }
+  .toggle-row:last-child{ border-bottom: none; }
+  .toggle-row .swatch{ width:10px; height:10px; border-radius:2px; margin-right:8px; display:inline-block; vertical-align:middle; }
+  .switch{ position: relative; width: 34px; height: 18px; flex-shrink:0; }
+  .switch input{ opacity:0; width:0; height:0; }
+  .slider{ position:absolute; inset:0; background: var(--line-bright); border-radius: 20px; cursor:pointer; transition: .15s; }
+  .slider:before{ content:""; position:absolute; width:14px; height:14px; left:2px; top:2px; background:#0b1210; border-radius:50%; transition:.15s; }
+  input:checked + .slider{ background: var(--canopy-dim); }
+  input:checked + .slider:before{ transform: translateX(16px); background: var(--canopy); }
+
+  .stat{
+    display:flex; justify-content: space-between; align-items: baseline;
+    padding: 7px 0;
+    border-bottom: 1px dashed var(--line);
+    font-size: 13px;
+  }
+  .stat:last-child{ border-bottom: none; }
+  .stat .k{ color: var(--text-mid); }
+  .stat .v{ font-family:'IBM Plex Mono', monospace; font-weight: 600; color: var(--text-hi); }
+  .stat .v.big{ font-size: 18px; color: var(--canopy); }
+
+  .badge{
+    display:inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 20px;
+    background: var(--bg-panel); border: 1px solid var(--line-bright); color: var(--text-mid);
+    margin-left: 6px;
+  }
+  .badge.sar{ color: var(--sar); border-color: var(--sar); }
+  .badge.optical{ color: var(--canopy); border-color: var(--canopy); }
+
+  #confidence-bar{ height: 6px; border-radius: 4px; background: var(--line); overflow:hidden; margin-top: 4px; }
+  #confidence-fill{ height: 100%; background: linear-gradient(90deg, var(--alert), var(--canopy)); width:0%; transition: width .4s ease; }
+
+  #empty-state{ color: var(--text-dim); font-size: 12.5px; line-height: 1.6; padding: 4px 2px; }
+
+  /* ---------- Map ---------- */
+  #map{ width: 100%; height: 100%; background: #0b1210; }
+  .leaflet-container{ background: #0b1210; }
+  /* Dark-mode filter applied to plain OpenStreetMap tiles, since we deliberately
+     avoid hosted "dark style" basemaps (e.g. CARTO) that now require API keys —
+     this keeps the map key-free while matching the console's dark aesthetic. */
+  .leaflet-tile-pane{
+    filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7);
+  }
+  /* Image overlays (RGB/NDVI/SAR/mask previews) sit in a different pane and
+     should NOT be affected by the basemap's inverted filter. */
+  .leaflet-overlay-pane img{
+    filter: none;
+  }
+
+  #layer-legend{
+    position: absolute; bottom: 16px; left: 16px; z-index: 500;
+    background: rgba(18,27,23,0.92); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 12px; font-size: 11.5px; color: var(--text-mid);
+    backdrop-filter: blur(3px);
+  }
+
+  #loading-overlay{
+    position:absolute; inset:0; z-index: 900;
+    background: rgba(11,18,16,0.72);
+    display:none; align-items:center; justify-content:center;
+    flex-direction: column; gap: 10px;
+  }
+  #loading-overlay.show{ display:flex; }
+  .spinner{
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 2px solid var(--line-bright); border-top-color: var(--canopy);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin{ to{ transform: rotate(360deg); } }
+  #loading-text{ font-size: 12.5px; color: var(--text-mid); font-family: 'IBM Plex Mono', monospace; }
+
+  ::-webkit-scrollbar{ width: 8px; }
+  ::-webkit-scrollbar-thumb{ background: var(--line-bright); border-radius: 4px; }
+  ::-webkit-scrollbar-track{ background: transparent; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="topbar">
+    <div id="brand">
+      <div class="mark"></div>
+      <div class="name">SylvaSense</div>
+      <div class="tag mono" id="api-target">api: localhost:8000</div>
+    </div>
+    <div id="status" class="mono"><span class="dot"></span><span id="status-text">idle</span></div>
+  </div>
+
+  <div id="sidebar">
+
+    <div>
+      <div class="section-label">AREA OF INTEREST</div>
+      <div class="card">
+        <div id="draw-hint">Draw a polygon on the map (<b>~500m–1km</b> across works best) over the forest area you want to analyze, then run inference.</div>
+        <div class="btn-row" style="margin-top:12px;">
+          <button id="btn-draw" class="ghost">Draw AOI</button>
+          <button id="btn-sample" class="ghost">Load Sample</button>
+        </div>
+        <button id="btn-infer" class="primary" style="margin-top:8px;" disabled>Run Live Inference</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">SPECTRAL LAYERS</div>
+      <div class="card">
+        <div class="toggle-row">
+          <span><span class="swatch" style="background:#cfd8d2"></span>RGB Composite</span>
+          <label class="switch"><input type="checkbox" id="toggle-rgb" checked><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span><span class="swatch" style="background:#3fb87a"></span>NDVI (Vegetation Index)</span>
+          <label class="switch"><input type="checkbox" id="toggle-ndvi"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span><span class="swatch" style="background:#4aa3c9"></span>SAR VV (Sentinel-1)</span>
+          <label class="switch"><input type="checkbox" id="toggle-sar"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span><span class="swatch" style="background:#e8a33d"></span>Canopy Mask</span>
+          <label class="switch"><input type="checkbox" id="toggle-mask"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span><span class="swatch" style="background:#d9614f"></span>Detected Crowns</span>
+          <label class="switch"><input type="checkbox" id="toggle-crowns" checked><span class="slider"></span></label>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex:1;">
+      <div class="section-label">INFERENCE RESULT</div>
+      <div class="card" id="results-card">
+        <div id="empty-state">Run inference on a drawn AOI to see tree count, biomass, and carbon estimates here.</div>
+        <div id="results-content" style="display:none;">
+          <div class="stat"><span class="k">Trees detected</span><span class="v big" id="r-count">—</span></div>
+          <div class="stat"><span class="k">Total AGB</span><span class="v" id="r-agb">—</span></div>
+          <div class="stat"><span class="k">Carbon stock</span><span class="v" id="r-carbon">—</span></div>
+          <div class="stat"><span class="k">CO2 equivalent</span><span class="v" id="r-co2">—</span></div>
+          <div class="stat"><span class="k">Data source</span><span class="v" id="r-source">—</span></div>
+          <div class="stat"><span class="k">Cloud cover</span><span class="v" id="r-cloud">—</span></div>
+          <div class="stat"><span class="k">Processing time</span><span class="v" id="r-time">—</span></div>
+          <div style="margin-top:10px;">
+            <div class="stat" style="border:none; padding-bottom:2px;"><span class="k">Confidence</span><span class="v" id="r-conf">—</span></div>
+            <div id="confidence-bar"><div id="confidence-fill"></div></div>
+          </div>
+          <button id="btn-export" class="ghost" style="margin-top:14px;">Export GeoJSON</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="position:relative;">
+    <div id="map"></div>
+    <div id="layer-legend">Sentinel-2 optical + Sentinel-1 SAR fusion &middot; synthetic demo raster (see README)</div>
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+      <div id="loading-text" class="mono">FETCHING IMAGERY…</div>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/leaflet/leaflet.js?v=2"></script>
+<script src="vendor/leaflet-draw/leaflet.draw.js?v=2"></script>
+<script src="app.js?v=2"></script>
+</body>
+</html>

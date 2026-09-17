@@ -1,0 +1,10 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+shapely>=2.0
+geojson>=3.1
+scikit-image>=0.22
+scipy>=1.11
+numpy>=1.26
+pillow>=10.0
+python-multipart>=0.0.9
+requests>=2.31          # needed only when USE_REAL_IMAGERY=1 (Sentinel Hub API calls)
