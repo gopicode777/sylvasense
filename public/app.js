@@ -80,7 +80,12 @@ const els = {
     mask: document.getElementById('toggle-mask'),
     crowns: document.getElementById('toggle-crowns'),
   },
+  treeList: document.getElementById('tree-list'),
+  treeListCount: document.getElementById('tree-list-count'),
+  treeSearch: document.getElementById('tree-search'),
 };
+
+const TREE_LIST_MAX_ROWS = 150; // render cap for perf; search still finds any tree beyond this
 
 function setStatus(mode, text) {
   els.status.className = mode;
@@ -216,8 +221,11 @@ function renderLayers(preview, coords) {
   map.fitBounds(bounds, { padding: [40, 40] });
 }
 
+let crownLayerById = {};
+
 function renderCrowns(geojson) {
   clearOverlay('crowns');
+  crownLayerById = {};
   overlayLayers.crowns = L.geoJSON(geojson, {
     style: (feature) => ({
       color: feature.properties.estimation_source === 'sar' ? '#4aa3c9' : '#d9614f',
@@ -231,12 +239,26 @@ function renderCrowns(geojson) {
         `Crown diameter: ${p.crown_diameter_m} m<br/>` +
         `NDVI: ${p.mean_ndvi}<br/>` +
         `AGB: ${p.agb_kg ?? '—'} kg<br/>` +
+        `Carbon: ${p.carbon_kg ?? '—'} kg<br/>` +
+        `CO2e: ${p.co2e_kg ?? '—'} kg<br/>` +
         `Source: ${p.estimation_source}<br/>` +
         `Confidence: ${p.confidence ?? '—'}`
       );
+      crownLayerById[p.tree_id] = layer;
     },
   });
   if (els.toggles.crowns.checked) overlayLayers.crowns.addTo(map);
+}
+
+// Pans/zooms to a tree's crown on the map and opens its popup — used by
+// both the per-tree list (click) and the search box (Enter / exact match).
+function locateTree(treeId) {
+  const layer = crownLayerById[treeId];
+  if (!layer) return false;
+  const center = layer.getBounds().getCenter();
+  map.setView(center, Math.max(map.getZoom(), 18));
+  layer.openPopup();
+  return true;
 }
 
 function applyToggleState() {
@@ -291,7 +313,81 @@ function renderResults(result) {
 
   document.getElementById('r-conf').textContent = `${Math.round(s.avg_confidence * 100)}%`;
   document.getElementById('confidence-fill').style.width = `${s.avg_confidence * 100}%`;
+
+  renderTreeList(result.geojson.features);
 }
+
+// Sorted once per inference run (biggest AGB first — usually what people
+// want to inspect first). Kept in module scope so the search box can filter
+// against it without re-sorting on every keystroke.
+let sortedTreeFeatures = [];
+
+function renderTreeList(features) {
+  sortedTreeFeatures = [...features].sort(
+    (a, b) => (b.properties.agb_kg ?? 0) - (a.properties.agb_kg ?? 0)
+  );
+  els.treeListCount.textContent = `${sortedTreeFeatures.length} trees`;
+  els.treeSearch.value = '';
+  paintTreeList(sortedTreeFeatures.slice(0, TREE_LIST_MAX_ROWS), sortedTreeFeatures.length);
+}
+
+function paintTreeList(features, totalCount) {
+  if (!features.length) {
+    els.treeList.innerHTML = `<div class="no-match">No matching tree found.</div>`;
+    return;
+  }
+
+  const rows = features.map(f => {
+    const p = f.properties;
+    const badgeClass = p.estimation_source === 'sar' ? 'sar' : 'optical';
+    const agb = p.agb_kg !== undefined ? `${p.agb_kg.toFixed(1)} kg` : '—';
+    const carbon = p.carbon_kg !== undefined ? `${p.carbon_kg.toFixed(1)} kgC` : '—';
+    const conf = p.confidence !== undefined ? `${Math.round(p.confidence * 100)}%` : '—';
+    return `
+      <div class="tree-row" data-tree-id="${p.tree_id}">
+        <span class="t-id">#${p.tree_id}</span>
+        <span class="t-mid">
+          <span class="t-agb">${agb}</span>
+          <span class="t-meta">${p.crown_diameter_m} m crown • ${carbon} • NDVI ${p.mean_ndvi}</span>
+        </span>
+        <span class="t-badges">
+          <span class="t-conf">${conf}</span>
+          <span class="badge ${badgeClass}">${p.estimation_source}</span>
+        </span>
+      </div>`;
+  }).join('');
+
+  const truncNote = totalCount > features.length
+    ? `<div class="no-match">Showing top ${features.length} of ${totalCount} by AGB — search to find any tree # directly.</div>`
+    : '';
+
+  els.treeList.innerHTML = rows + truncNote;
+
+  els.treeList.querySelectorAll('.tree-row').forEach(row => {
+    row.addEventListener('click', () => {
+      locateTree(Number(row.dataset.treeId));
+    });
+  });
+}
+
+els.treeSearch.addEventListener('input', () => {
+  const q = els.treeSearch.value.trim();
+  if (!q) {
+    paintTreeList(sortedTreeFeatures.slice(0, TREE_LIST_MAX_ROWS), sortedTreeFeatures.length);
+    return;
+  }
+  const asNum = Number(q);
+  const matches = Number.isNaN(asNum)
+    ? []
+    : sortedTreeFeatures.filter(f => String(f.properties.tree_id).startsWith(q));
+  paintTreeList(matches.slice(0, TREE_LIST_MAX_ROWS), matches.length);
+});
+
+els.treeSearch.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const asNum = Number(els.treeSearch.value.trim());
+  if (!Number.isNaN(asNum)) locateTree(asNum);
+});
 
 els.btnExport.addEventListener('click', () => {
   if (!currentResult) return;

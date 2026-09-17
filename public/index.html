@@ -161,6 +161,35 @@
 
   #empty-state{ color: var(--text-dim); font-size: 12.5px; line-height: 1.6; padding: 4px 2px; }
 
+  .tree-list-head{
+    display:flex; justify-content:space-between; align-items:center;
+    font-size: 10.5px; letter-spacing: .08em; color: var(--text-dim);
+    padding-bottom: 6px; border-bottom: 1px solid var(--line);
+  }
+  .tree-search{
+    width:100%; box-sizing:border-box; margin-top:8px; padding:6px 8px;
+    background: var(--bg-panel); border: 1px solid var(--line-bright); border-radius:6px;
+    color: var(--text-hi); font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+  }
+  .tree-search:focus{ outline:none; border-color: var(--canopy); }
+  #tree-list{ max-height: 260px; overflow-y: auto; margin-top:8px; }
+  #tree-list::-webkit-scrollbar{ width:6px; }
+  #tree-list::-webkit-scrollbar-thumb{ background: var(--line-bright); border-radius:3px; }
+  .tree-row{
+    display:grid; grid-template-columns: 44px 1fr auto; align-items:center;
+    gap:8px; padding:7px 4px; border-bottom: 1px solid var(--line); cursor:pointer;
+    font-size:12px;
+  }
+  .tree-row:hover{ background: var(--bg-panel); }
+  .tree-row:last-child{ border-bottom:none; }
+  .tree-row .t-id{ color: var(--text-dim); font-family:'IBM Plex Mono', monospace; }
+  .tree-row .t-mid{ display:flex; flex-direction:column; gap:2px; }
+  .tree-row .t-agb{ font-family:'IBM Plex Mono', monospace; font-weight:600; color: var(--canopy); }
+  .tree-row .t-meta{ color: var(--text-dim); font-size: 10.5px; }
+  .tree-row .t-badges{ display:flex; align-items:center; gap:4px; justify-self:end; }
+  .tree-row .t-conf{ font-family:'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--text-mid); }
+  .no-match{ color: var(--text-dim); font-size:12px; padding:10px 4px; text-align:center; }
+
   /* ---------- Map ---------- */
   #map{ width: 100%; height: 100%; background: #0b1210; }
   .leaflet-container{ background: #0b1210; }
@@ -272,6 +301,15 @@
             <div id="confidence-bar"><div id="confidence-fill"></div></div>
           </div>
           <button id="btn-export" class="ghost" style="margin-top:14px;">Export GeoJSON</button>
+
+          <div style="margin-top:16px;">
+            <div class="tree-list-head">
+              <span>PER-TREE BREAKDOWN</span>
+              <span id="tree-list-count" class="mono">—</span>
+            </div>
+            <input id="tree-search" class="tree-search" type="text" placeholder="Find tree by # (e.g. 12)" />
+            <div id="tree-list"></div>
+          </div>
         </div>
       </div>
     </div>
